@@ -155,6 +155,7 @@ from six.moves import range
 logger = logging.getLogger(__name__)
 
 try:
+    raise ImportError()
     from gensim.models.word2vec_inner import train_batch_sg, train_batch_cbow
     from gensim.models.word2vec_inner import score_sentence_sg, score_sentence_cbow
     from gensim.models.word2vec_inner import FAST_VERSION, MAX_WORDS_IN_BATCH
@@ -473,22 +474,34 @@ def train_sg_pair(model, word, context_index, alpha, learn_vectors=True, learn_h
     if model.negative:
         # use this word (label = 1) + `negative` other random words not from this sentence (label = 0)
         word_indices = [predict_word.index]
-        while len(word_indices) < model.negative + 1:
-            w = model.cum_table.searchsorted(model.random.randint(model.cum_table[-1]))
+        models = [model, model.model_fixed] if predict_word.offset == 0 else [model.model_fixed, model]
+        total_neg = model.negative + 1
+        half = total_neg // 2
+        while len(word_indices) < half:
+            w = models[0].cum_table.searchsorted(models[0].random.randint(models[0].cum_table[-1]))
             if w != predict_word.index:
                 word_indices.append(w)
-        if predict_word.offset == 0:
-            l2b = model.syn1neg[word_indices]  # 2d matrix, k+1 x layer1_size
-        else:
-            l2b = np.concatenate([model.model_fixed.syn1neg[fixed_index], model.syn1neg[word_indices[1:]]], axis=1)
+        while len(word_indices) < total_neg:
+            w = models[1].cum_table.searchsorted(models[1].random.randint(models[1].cum_table[-1]))
+            if w != predict_word.index:
+                word_indices.append(w)
+        # if predict_word.offset == 0:
+        #     l2b = model.syn1neg[word_indices]  # 2d matrix, k+1 x layer1_size
+        # else:
+        #     l2b = np.concatenate([np.reshape(model.model_fixed.syn1neg[fixed_index], [1, -1]), model.syn1neg[word_indices[1:]]], axis=0)
+        l2b = np.concatenate([models[0].syn1neg[word_indices[:half]], models[1].syn1neg[word_indices[half:]]], axis=0)
         prod_term = dot(l1, l2b.T)
         fb = expit(prod_term)  # propagate hidden -> output
         gb = (model.neg_labels - fb) * alpha  # vector of error gradients multiplied by the learning rate
         if learn_hidden:
+            # if predict_word.offset == 0:
+            #     model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
+            # else:
+            #     model.syn1neg[word_indices[1:]] += outer(gb[1:], l1)  # learn hidden -> output
             if predict_word.offset == 0:
-                model.syn1neg[word_indices] += outer(gb, l1)  # learn hidden -> output
+                model.syn1neg[word_indices[:half]] += outer(gb[:half], l1)  # learn hidden -> output
             else:
-                model.syn1neg[word_indices[1:]] += outer(gb[1:], l1)  # learn hidden -> output
+                model.syn1neg[word_indices[half:]] += outer(gb[half:], l1)  # learn hidden -> output
         neu1e += dot(gb, l2b)  # save error
 
         # loss component corresponding to negative sampling
@@ -1372,6 +1385,14 @@ class Word2Vec(BaseWordEmbeddingsModel):
         """
         try:
             model = super(Word2Vec, cls).load(*args, **kwargs)
+            if model.negative > 0:
+                # precompute negative labels optimization for pure-python training
+                model.neg_labels = np.zeros(model.negative + 1)
+                model.neg_labels[0] = 1.
+            else:
+                model.neg_labels = []
+
+            return model
 
             # for backward compatibility for `max_final_vocab` feature
             if not hasattr(model, 'max_final_vocab'):
@@ -1387,7 +1408,9 @@ class Word2Vec(BaseWordEmbeddingsModel):
     @classmethod
     def load_bi(cls, source, target, **kwargs):
         model_src = Word2Vec.load(source, **kwargs)
+        print('load "{}" as source model'.format(source))
         model_tgt = Word2Vec.load(target, **kwargs)
+        print('load "{}" as target(fixed) model'.format(target))
 
         model_src.model_fixed = model_tgt
         model_src.window = 9
@@ -2073,8 +2096,8 @@ if __name__ == "__main__":
 
     logger.info("finished running %s", program)
 
-    # m = Word2Vec.load_bi('/media/razor/Files/projects/gensim-3.8.0/corpus.txt.model', '/media/razor/Files/projects/gensim-3.8.0/word2vec-zh.model')
-    # with open('/media/razor/Files/projects/gensim-3.8.0/mixed.txt') as fp:
+    # m = Word2Vec.load_bi('/media/razor/Files/projects/gensim-3.8.0/example/c.txt.model', '/media/razor/Files/projects/gensim-3.8.0/example/e.txt.model')
+    # with open('/media/razor/Files/projects/gensim-3.8.0/example/m.txt') as fp:
     #     sentences = [line.strip().split() for line in fp.readlines()]
     # m.train(sentences=sentences, total_examples=10, epochs=10)
     # m.save('mixed')
