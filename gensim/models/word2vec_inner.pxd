@@ -49,7 +49,7 @@ cdef our_saxpy_ptr our_saxpy
 
 
 cdef struct Word2VecConfig:
-    int hs, negative, sample, compute_loss, size, window, cbow_mean, workers
+    int hs, negative, sample, compute_loss, size, window, cbow_mean, workers, vocab_size
     REAL_t running_training_loss, alpha
 
     REAL_t *syn0
@@ -104,6 +104,10 @@ cdef unsigned long long w2v_fast_sentence_sg_neg(
     const np.uint32_t word2_index, const REAL_t alpha, REAL_t *work,
     unsigned long long next_random, REAL_t *word_locks,
     const int _compute_loss, REAL_t *_running_training_loss_param) nogil
+
+
+cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
+    const np.uint32_t word_index, const np.uint32_t word2_index) nogil
 
 
 cdef void w2v_fast_sentence_cbow_hs(

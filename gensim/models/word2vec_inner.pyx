@@ -246,6 +246,120 @@ cdef unsigned long long w2v_fast_sentence_sg_neg(
 
     return next_random
 
+cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
+    const np.uint32_t word_index, const np.uint32_t word2_index) nogil:
+    """Train on a single effective word from the current batch, using the Skip-Gram model.
+
+    In this model we are using a given word to predict a context word (a word that is
+    close to the one we are using as training). Negative sampling is used to speed-up
+    training.
+
+    Parameters
+    ----------
+    negative
+        Number of negative words to be sampled.
+    cum_table
+        Cumulative-distribution table using stored vocabulary word counts for
+        drawing random words (with a negative label).
+    cum_table_len
+        Length of the `cum_table`
+    syn0
+        Embeddings for the words in the vocabulary (`model.wv.vectors`)
+    syn1neg
+        Weights of the hidden layer in the model's trainable neural network.
+    size
+        Length of the embeddings.
+    word_index
+        Index of the current training word in the vocabulary.
+    word2_index
+        Index of the context word in the vocabulary.
+    alpha
+        Learning rate.
+    work
+        Private working memory for each worker.
+    next_random
+        Seed to produce the index for the next word to be randomly sampled.
+    word_locks
+        Lock factors for each word. A value of 0 will block training.
+    _compute_loss
+        Whether or not the loss should be computed at this step.
+    _running_training_loss_param
+        Running loss, used to debug or inspect how training progresses.
+
+    Returns
+    -------
+    Seed to draw the training word for the next iteration of the same routine.
+
+    """
+    cdef long long a
+    cdef long long row1, row2
+    cdef unsigned long long modulo = 281474976710655ULL
+    cdef REAL_t f, g, label, f_dot, log_e_f_dot
+    cdef np.uint32_t target_index
+    cdef int d
+
+    cdef int negative = c[0].negative
+    cdef REAL_t alpha = c[0].alpha
+    cdef int _compute_loss = c[0].compute_loss
+    cdef int size = c[0].size
+    cdef int vocab_size = c[0].vocab_size
+
+    cdef REAL_t *work = c[0].work
+    cdef REAL_t *word_locks = c[0].word_locks
+    cdef REAL_t *_running_training_loss_param = &c[0].running_training_loss
+
+    memset(work, 0, size * cython.sizeof(REAL_t))
+
+    cdef int source_fix = word2_index >= vocab_size, target_fix, other_cfg
+    cdef int total_neg = negative + 1
+    cdef int half = total_neg / 2
+    row1 = word2_index * size
+    for d in range(total_neg):
+        target_fix = word_index >= vocab_size
+        if d == 0:
+            target_index = (word_index - vocab_size) if target_fix else word_index
+            label = ONEF
+        elif d < half:
+            target_index = bisect_left(c[target_fix].cum_table,
+                (c[target_fix].next_random >> 16) % c[target_fix].cum_table[c[target_fix].cum_table_len - 1],
+                0, c[target_fix].cum_table_len)
+            c[target_fix].next_random = (c[target_fix].next_random * <unsigned long long>25214903917ULL + 11) & modulo
+            if target_index == word_index:
+                continue
+            label = <REAL_t>0.0
+        else:
+            other_cfg = 1 - target_fix
+            target_index = bisect_left(c[other_cfg].cum_table,
+                (c[other_cfg].next_random >> 16) % c[other_cfg].cum_table[c[other_cfg].cum_table_len - 1],
+                0, c[other_cfg].cum_table_len)
+            c[other_cfg].next_random = (c[other_cfg].next_random * <unsigned long long>25214903917ULL + 11) & modulo
+            if target_index == word_index:
+                continue
+            label = <REAL_t>0.0
+
+        row2 = target_index * size
+        f_dot = our_dot(&size, &c[source_fix].syn0[row1], &ONE, &c[target_fix].syn1neg[row2], &ONE)
+        if f_dot <= -MAX_EXP or f_dot >= MAX_EXP:
+            continue
+        f = EXP_TABLE[<int>((f_dot + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
+        g = (label - f) * alpha
+
+        if _compute_loss == 1:
+            f_dot = (f_dot if d == 0  else -f_dot)
+            if f_dot <= -MAX_EXP or f_dot >= MAX_EXP:
+                continue
+            log_e_f_dot = LOG_TABLE[<int>((f_dot + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
+            _running_training_loss_param[0] = _running_training_loss_param[0] - log_e_f_dot
+
+        our_saxpy(&size, &g, &c[target_fix].syn1neg[row2], &ONE, work, &ONE)
+        if not target_fix:
+            our_saxpy(&size, &g, &c[source_fix].syn0[row1], &ONE, &c[0].syn1neg[row2], &ONE)
+
+    if not source_fix:
+        our_saxpy(&size, &c[target_fix].word_locks[word2_index], work, &ONE, &c[0].syn0[row1], &ONE)
+
+    return c[source_fix].next_random
+
 
 cdef void w2v_fast_sentence_cbow_hs(
     const np.uint32_t *word_point, const np.uint8_t *word_code, int codelens[MAX_SENTENCE_LEN],
@@ -479,6 +593,7 @@ cdef init_w2v_config(Word2VecConfig *c, model, alpha, compute_loss, _work, _neu1
     c[0].word_locks = <REAL_t *>(np.PyArray_DATA(model.trainables.vectors_lockf))
     c[0].alpha = alpha
     c[0].size = model.wv.vector_size
+    c[0].vocab_size = len(model.wv.vocab)
 
     if c[0].hs:
         c[0].syn1 = <REAL_t *>(np.PyArray_DATA(model.trainables.syn1))
@@ -522,43 +637,92 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
         and were not discarded by negative sampling).
 
     """
-    cdef Word2VecConfig c
     cdef int i, j, k
     cdef int effective_words = 0, effective_sentences = 0
     cdef int sent_idx, idx_start, idx_end
 
-    init_w2v_config(&c, model, alpha, compute_loss, _work)
+    cdef Word2VecConfig configs[2]
+    cdef Word2VecConfig c = configs[0], c_fixed = configs[1]
 
+    fixed = model.model_fixed
 
-    # prepare C structures so we can go "full C" and release the Python GIL
-    vlookup = model.wv.vocab
-    c.sentence_idx[0] = 0  # indices of the first sentence always start at 0
-    for sent in sentences:
-        if not sent:
-            continue  # ignore empty sentences; leave effective_sentences unchanged
-        for token in sent:
-            word = vlookup[token] if token in vlookup else None
-            if word is None:
-                continue  # leaving `effective_words` unchanged = shortening the sentence = expanding the window
-            if c.sample and word.sample_int < random_int32(&c.next_random):
-                continue
-            c.indexes[effective_words] = word.index
-            if c.hs:
-                c.codelens[effective_words] = <int>len(word.code)
-                c.codes[effective_words] = <np.uint8_t *>np.PyArray_DATA(word.code)
-                c.points[effective_words] = <np.uint32_t *>np.PyArray_DATA(word.point)
-            effective_words += 1
+    if fixed is not None:
+        init_w2v_config(&c, model, alpha, compute_loss, _work)
+        init_w2v_config(&c_fixed, fixed, alpha, compute_loss, _work)
+
+        # prepare C structures so we can go "full C" and release the Python GIL
+        vlookup = model.wv.vocab
+        vlookup_fixed = fixed.wv.vocab
+        c.sentence_idx[0] = 0  # indices of the first sentence always start at 0
+        for sent in sentences:
+            if not sent:
+                continue  # ignore empty sentences; leave effective_sentences unchanged
+            for token in sent:
+                word = None
+                if token in vlookup:
+                    word = vlookup[token]
+                    if word is None:
+                        continue  # leaving `effective_words` unchanged = shortening the sentence = expanding the window
+                    if c.sample and word.sample_int < random_int32(&c.next_random):
+                        continue
+                    c.indexes[effective_words] = word.index
+                elif token in vlookup_fixed:
+                    word = vlookup_fixed[token]
+                    if word is None:
+                        continue  # leaving `effective_words` unchanged = shortening the sentence = expanding the window
+                    if c_fixed.sample and word.sample_int < random_int32(&c_fixed.next_random):
+                        continue
+                    c.indexes[effective_words] = word.index + c.vocab_size
+                if c.hs:
+                    c.codelens[effective_words] = <int>len(word.code)
+                    c.codes[effective_words] = <np.uint8_t *>np.PyArray_DATA(word.code)
+                    c.points[effective_words] = <np.uint32_t *>np.PyArray_DATA(word.point)
+                effective_words += 1
+                if effective_words == MAX_SENTENCE_LEN:
+                    break  # TODO: log warning, tally overflow?
+
+            # keep track of which words go into which sentence, so we don't train
+            # across sentence boundaries.
+            # indices of sentence number X are between <sentence_idx[X], sentence_idx[X])
+            effective_sentences += 1
+            c.sentence_idx[effective_sentences] = effective_words
+
             if effective_words == MAX_SENTENCE_LEN:
                 break  # TODO: log warning, tally overflow?
+    else:
 
-        # keep track of which words go into which sentence, so we don't train
-        # across sentence boundaries.
-        # indices of sentence number X are between <sentence_idx[X], sentence_idx[X])
-        effective_sentences += 1
-        c.sentence_idx[effective_sentences] = effective_words
+        init_w2v_config(&c, model, alpha, compute_loss, _work)
 
-        if effective_words == MAX_SENTENCE_LEN:
-            break  # TODO: log warning, tally overflow?
+        # prepare C structures so we can go "full C" and release the Python GIL
+        vlookup = model.wv.vocab
+        c.sentence_idx[0] = 0  # indices of the first sentence always start at 0
+        for sent in sentences:
+            if not sent:
+                continue  # ignore empty sentences; leave effective_sentences unchanged
+            for token in sent:
+
+                word = vlookup[token] if token in vlookup else None
+                if word is None:
+                    continue  # leaving `effective_words` unchanged = shortening the sentence = expanding the window
+                if c.sample and word.sample_int < random_int32(&c.next_random):
+                    continue
+                c.indexes[effective_words] = word.index
+                if c.hs:
+                    c.codelens[effective_words] = <int>len(word.code)
+                    c.codes[effective_words] = <np.uint8_t *>np.PyArray_DATA(word.code)
+                    c.points[effective_words] = <np.uint32_t *>np.PyArray_DATA(word.point)
+                effective_words += 1
+                if effective_words == MAX_SENTENCE_LEN:
+                    break  # TODO: log warning, tally overflow?
+
+            # keep track of which words go into which sentence, so we don't train
+            # across sentence boundaries.
+            # indices of sentence number X are between <sentence_idx[X], sentence_idx[X])
+            effective_sentences += 1
+            c.sentence_idx[effective_sentences] = effective_words
+
+            if effective_words == MAX_SENTENCE_LEN:
+                break  # TODO: log warning, tally overflow?
 
     # precompute "reduced window" offsets in a single randint() call
     for i, item in enumerate(model.random.randint(0, c.window, effective_words)):
@@ -582,7 +746,10 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
                     if c.hs:
                         w2v_fast_sentence_sg_hs(c.points[i], c.codes[i], c.codelens[i], c.syn0, c.syn1, c.size, c.indexes[j], c.alpha, c.work, c.word_locks, c.compute_loss, &c.running_training_loss)
                     if c.negative:
-                        c.next_random = w2v_fast_sentence_sg_neg(c.negative, c.cum_table, c.cum_table_len, c.syn0, c.syn1neg, c.size, c.indexes[i], c.indexes[j], c.alpha, c.work, c.next_random, c.word_locks, c.compute_loss, &c.running_training_loss)
+                        if fixed is None:
+                            c.next_random = w2v_fast_sentence_sg_neg(c.negative, c.cum_table, c.cum_table_len, c.syn0, c.syn1neg, c.size, c.indexes[i], c.indexes[j], c.alpha, c.work, c.next_random, c.word_locks, c.compute_loss, &c.running_training_loss)
+                        else:
+                            c.next_random = w2v_fast_sentence_sg_neg_bi(configs, c.indexes[i], c.indexes[j])
 
     model.running_training_loss = c.running_training_loss
     return effective_words
