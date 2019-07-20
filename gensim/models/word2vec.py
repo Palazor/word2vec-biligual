@@ -155,7 +155,7 @@ from six.moves import range
 logger = logging.getLogger(__name__)
 
 try:
-    raise ImportError()
+    # raise ImportError()
     from gensim.models.word2vec_inner import train_batch_sg, train_batch_cbow
     from gensim.models.word2vec_inner import score_sentence_sg, score_sentence_cbow
     from gensim.models.word2vec_inner import FAST_VERSION, MAX_WORDS_IN_BATCH
@@ -2095,9 +2095,3 @@ if __name__ == "__main__":
         model.accuracy(args.accuracy)
 
     logger.info("finished running %s", program)
-
-    # m = Word2Vec.load_bi('/media/razor/Files/projects/gensim-3.8.0/example/c.txt.model', '/media/razor/Files/projects/gensim-3.8.0/example/e.txt.model')
-    # with open('/media/razor/Files/projects/gensim-3.8.0/example/m.txt') as fp:
-    #     sentences = [line.strip().split() for line in fp.readlines()]
-    # m.train(sentences=sentences, total_examples=10, epochs=10)
-    # m.save('mixed')

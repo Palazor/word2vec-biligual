@@ -310,12 +310,11 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
 
     memset(work, 0, size * cython.sizeof(REAL_t))
 
-    cdef int source_fix = word2_index >= vocab_size, target_fix, other_cfg
+    cdef int source_fix = word2_index >= vocab_size, target_fix = word_index >= vocab_size, other_cfg
     cdef int total_neg = negative + 1
     cdef int half = total_neg / 2
     row1 = word2_index * size
     for d in range(total_neg):
-        target_fix = word_index >= vocab_size
         if d == 0:
             target_index = (word_index - vocab_size) if target_fix else word_index
             label = ONEF
