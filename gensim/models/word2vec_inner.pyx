@@ -292,10 +292,10 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
 
     """
     cdef long long a
-    cdef long long row1, row2
+    cdef long long source_row, target_row
     cdef unsigned long long modulo = 281474976710655ULL
     cdef REAL_t f, g, label, f_dot, log_e_f_dot
-    cdef np.uint32_t target_index
+    cdef np.uint32_t source_index, target_index
     cdef int d
 
     cdef int negative = c[0].negative
@@ -310,13 +310,14 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
 
     memset(work, 0, size * cython.sizeof(REAL_t))
 
-    cdef int source_fix = word2_index >= vocab_size, target_fix = word_index >= vocab_size, other_cfg
+    cdef int source_fix = word2_index >= vocab_size, target_fix = word_index >= vocab_size, other_cfg = word_index < vocab_size
+    source_index = (word2_index - vocab_size) if source_fix else word2_index
+    target_index = (word_index - vocab_size) if target_fix else word_index
     cdef int total_neg = negative + 1
     cdef int half = total_neg / 2
-    row1 = word2_index * size
+    source_row = source_index * size
     for d in range(total_neg):
         if d == 0:
-            target_index = (word_index - vocab_size) if target_fix else word_index
             label = ONEF
         elif d < half:
             target_index = bisect_left(c[target_fix].cum_table,
@@ -327,7 +328,6 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
                 continue
             label = <REAL_t>0.0
         else:
-            other_cfg = 1 - target_fix
             target_index = bisect_left(c[other_cfg].cum_table,
                 (c[other_cfg].next_random >> 16) % c[other_cfg].cum_table[c[other_cfg].cum_table_len - 1],
                 0, c[other_cfg].cum_table_len)
@@ -336,8 +336,8 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
                 continue
             label = <REAL_t>0.0
 
-        row2 = target_index * size
-        f_dot = our_dot(&size, &c[source_fix].syn0[row1], &ONE, &c[target_fix].syn1neg[row2], &ONE)
+        target_row = target_index * size
+        f_dot = our_dot(&size, &c[source_fix].syn0[source_row], &ONE, &c[target_fix].syn1neg[target_row], &ONE)
         if f_dot <= -MAX_EXP or f_dot >= MAX_EXP:
             continue
         f = EXP_TABLE[<int>((f_dot + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
@@ -350,12 +350,12 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
             log_e_f_dot = LOG_TABLE[<int>((f_dot + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
             _running_training_loss_param[0] = _running_training_loss_param[0] - log_e_f_dot
 
-        our_saxpy(&size, &g, &c[target_fix].syn1neg[row2], &ONE, work, &ONE)
+        our_saxpy(&size, &g, &c[target_fix].syn1neg[target_row], &ONE, work, &ONE)
         if not target_fix:
-            our_saxpy(&size, &g, &c[source_fix].syn0[row1], &ONE, &c[0].syn1neg[row2], &ONE)
+            our_saxpy(&size, &g, &c[source_fix].syn0[source_row], &ONE, &c[0].syn1neg[target_row], &ONE)
 
     if not source_fix:
-        our_saxpy(&size, &c[target_fix].word_locks[word2_index], work, &ONE, &c[0].syn0[row1], &ONE)
+        our_saxpy(&size, &c[target_fix].word_locks[source_index], work, &ONE, &c[0].syn0[source_row], &ONE)
 
     return c[source_fix].next_random
 
