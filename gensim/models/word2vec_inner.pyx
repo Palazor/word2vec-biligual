@@ -641,13 +641,14 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
     cdef int sent_idx, idx_start, idx_end
 
     cdef Word2VecConfig configs[2]
-    cdef Word2VecConfig c = configs[0], c_fixed = configs[1]
+    cdef Word2VecConfig *c = &configs[0]
+    cdef Word2VecConfig *c_fixed = &configs[1]
 
     fixed = model.model_fixed
 
     if fixed is not None:
-        init_w2v_config(&c, model, alpha, compute_loss, _work)
-        init_w2v_config(&c_fixed, fixed, alpha, compute_loss, _work)
+        init_w2v_config(c, model, alpha, compute_loss, _work)
+        init_w2v_config(c_fixed, fixed, alpha, compute_loss, _work)
 
         # prepare C structures so we can go "full C" and release the Python GIL
         vlookup = model.wv.vocab
@@ -690,7 +691,7 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
                 break  # TODO: log warning, tally overflow?
     else:
 
-        init_w2v_config(&c, model, alpha, compute_loss, _work)
+        init_w2v_config(c, model, alpha, compute_loss, _work)
 
         # prepare C structures so we can go "full C" and release the Python GIL
         vlookup = model.wv.vocab
