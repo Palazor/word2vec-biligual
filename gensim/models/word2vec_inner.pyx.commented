@@ -343,6 +343,16 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
 
         target_row = target_index * size
         f_dot = our_dot(&size, &c[source_fix].syn0[source_row], &ONE, &c[local_cfg].syn1neg[target_row], &ONE)
+        with gil:
+            if f_dot != f_dot:
+                sa = ''
+                sb = ''
+                for i in range(size):
+                    sa += ', {}'.format(c[source_fix].syn0[source_row + i])
+                    sb += ', {}'.format(c[local_cfg].syn1neg[target_row + i])
+                print('### {} = {} + {}, syn0: {}'.format(source_index, word2_index, vocab_size, sa))
+                print('### {} = {} + {}, syn1neg: {}'.format(target_index, word_index, c[1].vocab_size, sb))
+                exit(3)
         if f_dot <= -MAX_EXP or f_dot >= MAX_EXP:
             continue
         f = EXP_TABLE[<int>((f_dot + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
@@ -359,8 +369,31 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
         if not local_cfg:
             our_saxpy(&size, &g, &c[source_fix].syn0[source_row], &ONE, &c[0].syn1neg[target_row], &ONE)
 
+    cdef REAL_t s0[100]
     if not source_fix:
+        with gil:
+            for i in range(size):
+                s0[i] = c[source_fix].syn0[source_row + i]
         our_saxpy(&size, &c[source_fix].word_locks[source_index], work, &ONE, &c[0].syn0[source_row], &ONE)
+        with gil:
+            for j in range(size):
+                val = c[0].syn0[source_row + j]
+                if val != val:
+                    ss = ''
+                    sa = ''
+                    sb = ''
+                    sw = ''
+                    for i in range(size):
+                        ss += ', {}'.format(s0[i])
+                        sa += ', {}'.format(c[source_fix].syn0[source_row + i])
+                        sb += ', {}'.format(c[target_fix].syn1neg[target_row + i])
+                        sw += ', {}'.format(work[i])
+                    print('##################################################################\n### {} = {} + {}, syn0: {}'.format(source_index, word2_index, vocab_size, sa))
+                    print('### befr: {}'.format(ss))
+                    print('### sw: {}'.format(sw))
+                    print('### syn1neg: ', sb)
+                    print('### word_lock: ', c[target_fix].word_locks[source_index])
+                    exit(1)
 
     return c[source_fix].next_random
 
