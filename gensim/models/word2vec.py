@@ -826,6 +826,9 @@ class Word2Vec(BaseWordEmbeddingsModel):
         self.trainables = Word2VecTrainables(seed=seed, vector_size=size, hashfxn=hashfxn)
 
         self.model_fixed = None
+        self.off_vocab = None
+        self.off_vocab_sims = None
+        self.off_vocab_score = None
 
         super(Word2Vec, self).__init__(
             sentences=sentences, corpus_file=corpus_file, workers=workers, vector_size=size, epochs=iter,
@@ -1406,15 +1409,34 @@ class Word2Vec(BaseWordEmbeddingsModel):
             return load_old_word2vec(*args, **kwargs)
 
     @classmethod
-    def load_bi(cls, source, target, **kwargs):
+    def load_bi(cls, source, target, off_vocab=None, **kwargs):
         model_src = Word2Vec.load(source, **kwargs)
         print('load "{}" as source model'.format(source))
         model_tgt = Word2Vec.load(target, **kwargs)
         print('load "{}" as target(fixed) model'.format(target))
 
+        model_tgt.off_vocab = None
+        model_tgt.off_vocab_sims = None
+        model_tgt.off_vocab_score = None
+
         model_src.model_fixed = model_tgt
         model_src.window = 9
         model_src.vocab_size = len(model_src.wv.vocab)
+
+        model_src.off_vocab = None
+
+        if off_vocab is not None:
+            model_src.off_vocab = {}
+            off_vocab_sims = []
+            off_vocab_score = []
+            vocab = model_src.wv.vocab
+            for i, term in enumerate(off_vocab):
+                model_src.off_vocab[term] = i * 10
+                for pair in model_src.wv.most_similar(term):
+                    off_vocab_sims.append(vocab[pair[0]].index)
+                    off_vocab_score.append(pair[1])
+            model_src.off_vocab_sims = np.asarray(off_vocab_sims, dtype=np.int32)
+            model_src.off_vocab_score = np.asarray(off_vocab_score, dtype=np.float)
 
         return model_src
 

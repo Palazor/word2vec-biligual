@@ -57,6 +57,11 @@ cdef struct Word2VecConfig:
     REAL_t *work
     REAL_t *neu1
 
+    # off vocab similarities
+    np.int32_t off_vocab_offset[MAX_SENTENCE_LEN]
+    np.uint32_t *off_vocab_sims
+    REAL_t *off_vocab_score
+
     int codelens[MAX_SENTENCE_LEN]
     np.uint32_t indexes[MAX_SENTENCE_LEN]
     np.uint32_t reduced_windows[MAX_SENTENCE_LEN]
@@ -107,7 +112,7 @@ cdef unsigned long long w2v_fast_sentence_sg_neg(
 
 
 cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
-    const np.uint32_t word_index, const np.uint32_t word2_index) nogil
+    const np.uint32_t word_index, const np.uint32_t word2_index, const np.uint32_t off_vocab_offset) nogil
 
 
 cdef void w2v_fast_sentence_cbow_hs(

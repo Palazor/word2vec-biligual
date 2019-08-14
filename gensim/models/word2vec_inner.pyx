@@ -247,7 +247,7 @@ cdef unsigned long long w2v_fast_sentence_sg_neg(
     return next_random
 
 cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
-    const np.uint32_t word_index, const np.uint32_t word2_index) nogil:
+    const np.uint32_t word_index, const np.uint32_t word2_index, const np.uint32_t off_vocab_offset) nogil:
     """Train on a single effective word from the current batch, using the Skip-Gram model.
 
     In this model we are using a given word to predict a context word (a word that is
@@ -308,6 +308,11 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
     cdef REAL_t *word_locks = c[0].word_locks
     cdef REAL_t *_running_training_loss_param = &c[0].running_training_loss
 
+    # off vocab similarities
+    cdef np.uint32_t off_index
+    cdef long long off_row
+    cdef REAL_t off_score
+
     memset(work, 0, size * cython.sizeof(REAL_t))
 
     cdef int source_fix, target_fix, local_cfg
@@ -358,9 +363,21 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
         our_saxpy(&size, &g, &c[local_cfg].syn1neg[target_row], &ONE, work, &ONE)
         if not local_cfg:
             our_saxpy(&size, &g, &c[source_fix].syn0[source_row], &ONE, &c[0].syn1neg[target_row], &ONE)
+            if off_vocab_offset > -1:
+                for i in range(off_vocab_offset, off_vocab_offset + 10):
+                    off_index = c[0].off_vocab_sims[i]
+                    off_row = off_index * size
+                    off_score = c[0].off_vocab_score[off_index] * g
+                    our_saxpy(&size, &off_score, &c[source_fix].syn0[off_row], &ONE, &c[0].syn1neg[target_row], &ONE)
 
     if not source_fix:
         our_saxpy(&size, &c[source_fix].word_locks[source_index], work, &ONE, &c[0].syn0[source_row], &ONE)
+        if off_vocab_offset > -1:
+            for i in range(off_vocab_offset, off_vocab_offset + 10):
+                off_index = c[0].off_vocab_sims[i]
+                off_row = off_index * size
+                off_score = c[0].off_vocab_score[off_index]
+                our_saxpy(&size, &off_score, work, &ONE, &c[0].syn0[off_row], &ONE)
 
     return c[source_fix].next_random
 
@@ -599,6 +616,11 @@ cdef init_w2v_config(Word2VecConfig *c, model, alpha, compute_loss, _work, _neu1
     c[0].size = model.wv.vector_size
     c[0].vocab_size = len(model.wv.vocab)
 
+    # off vocab similarities
+    if model.off_vocab is not None:
+        c[0].off_vocab_sims = <np.uint32_t *>(np.PyArray_DATA(model.off_vocab_sims))
+        c[0].off_vocab_score = <REAL_t *>(np.PyArray_DATA(model.off_vocab_score))
+
     if c[0].hs:
         c[0].syn1 = <REAL_t *>(np.PyArray_DATA(model.trainables.syn1))
 
@@ -657,6 +679,7 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
 
         # prepare C structures so we can go "full C" and release the Python GIL
         vlookup = model.wv.vocab
+        vlookup_off = model.off_vocab
         vlookup_fixed = fixed.wv.vocab
         c.sentence_idx[0] = 0  # indices of the first sentence always start at 0
         for sent in sentences:
@@ -671,6 +694,7 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
                     if c.sample and word.sample_int < random_int32(&c.next_random):
                         continue
                     c.indexes[effective_words] = word.index
+                    c.off_vocab_offset[effective_words] = vlookup_off[token] if vlookup_off is not None and token in vlookup_off else -1
                 elif token in vlookup_fixed:
                     word = vlookup_fixed[token]
                     if word is None:
@@ -678,6 +702,7 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
                     if c_fixed.sample and word.sample_int < random_int32(&c_fixed.next_random):
                         continue
                     c.indexes[effective_words] = word.index + c.vocab_size
+                    c.off_vocab_offset[effective_words] = -1
                 if c.hs:
                     c.codelens[effective_words] = <int>len(word.code)
                     c.codes[effective_words] = <np.uint8_t *>np.PyArray_DATA(word.code)
@@ -754,7 +779,7 @@ def train_batch_sg(model, sentences, alpha, _work, compute_loss):
                         if fixed is None:
                             c.next_random = w2v_fast_sentence_sg_neg(c.negative, c.cum_table, c.cum_table_len, c.syn0, c.syn1neg, c.size, c.indexes[i], c.indexes[j], c.alpha, c.work, c.next_random, c.word_locks, c.compute_loss, &c.running_training_loss)
                         else:
-                            c.next_random = w2v_fast_sentence_sg_neg_bi(configs, c.indexes[i], c.indexes[j])
+                            c.next_random = w2v_fast_sentence_sg_neg_bi(configs, c.indexes[i], c.indexes[j], c.off_vocab_offset[j])
 
     model.running_training_loss = c.running_training_loss
     return effective_words
