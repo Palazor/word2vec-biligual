@@ -1436,7 +1436,7 @@ class Word2Vec(BaseWordEmbeddingsModel):
                     off_vocab_sims.append(vocab[pair[0]].index)
                     off_vocab_score.append(pair[1])
             model_src.off_vocab_sims = np.asarray(off_vocab_sims, dtype=np.int32)
-            model_src.off_vocab_score = np.asarray(off_vocab_score, dtype=np.float)
+            model_src.off_vocab_score = np.asarray(off_vocab_score, dtype=np.float32)
 
         return model_src
 

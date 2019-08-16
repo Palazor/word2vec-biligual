@@ -367,8 +367,8 @@ cdef unsigned long long w2v_fast_sentence_sg_neg_bi(Word2VecConfig *c,
                 for i in range(off_vocab_offset, off_vocab_offset + 10):
                     off_index = c[0].off_vocab_sims[i]
                     off_row = off_index * size
-                    off_score = c[0].off_vocab_score[off_index] * g
-                    our_saxpy(&size, &off_score, &c[source_fix].syn0[off_row], &ONE, &c[0].syn1neg[target_row], &ONE)
+#                    off_score = c[0].off_vocab_score[off_index] * g
+                    our_saxpy(&size, &g, &c[source_fix].syn0[off_row], &ONE, &c[0].syn1neg[target_row], &ONE)
 
     if not source_fix:
         our_saxpy(&size, &c[source_fix].word_locks[source_index], work, &ONE, &c[0].syn0[source_row], &ONE)
